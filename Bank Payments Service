@@ -1,0 +1,638 @@
+// GK
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Diagnostics;
+using System.Linq;
+using System.ServiceProcess;
+using System.Text;
+using System.Threading.Tasks;
+using System.Timers;
+using MySql.Data;
+using MySql.Data.MySqlClient;
+using System.Data.SqlClient;
+using System.Configuration;
+using System.IO;
+
+namespace SageZBService
+{
+    public partial class SageZBService : ServiceBase
+    {
+
+        private DataSet ds = new DataSet();
+        // private MySqlConnection ZBConnection, SAGEConnection;
+        // string ZBconnString = "Server=10.1.1.11;Port=3306;Database=BANKPAYMENTS;UID=root;password='admin';";
+        string ZBconnString = "Server=localhost;Port=3306;Database=dbeclipse;UID=root;password='';";
+        string EcoCashConnString = "Server=localhost;Port=3306;Database=dbeclipse;UID=root;password='';";
+        string SAGEconnString = "Data Source=.;Initial Catalog=CATHOLIC UNIVERSITY OF ZIMBABWE;User ID=root;Password=######;Integrated Security=False;" +
+            "MultipleActiveResultSets=True;";
+        string SAGEconnStringPOST = "Data Source=.;Initial Catalog=CATHOLIC UNIVERSITY OF ZIMBABWE;User ID=root;Password=######;Integrated Security=False;" +
+            "MultipleActiveResultSets=True;";
+        Timer timer = new Timer();
+
+
+        private bool OpenConnectionToZBdb()
+        {
+            try
+            {
+                MySqlConnection ZBConnection = new MySqlConnection(ZBconnString);
+
+                ZBConnection.Open();
+                WriteToFile("ZBConnection opened on: ... " + DateTime.Now);
+                return true;
+
+            }
+            catch (MySqlException e)
+            {
+                WriteToFile("Connection Error Occured : " + e + " " + DateTime.Now);
+                return false;
+            }
+
+        }
+
+        // EcoCash DB Connnection
+        private bool OpenConnectionToECdb()
+        {
+            try
+            {
+                MySqlConnection ECConnection = new MySqlConnection(ZBconnString);
+
+                ECConnection.Open();
+                WriteToFile("EcoCash db Connection opened on: ... " + DateTime.Now);
+                return true;
+
+            }
+            catch (MySqlException e)
+            {
+                WriteToFile("EcoCash Connection Error Occured : " + e + " " + DateTime.Now);
+                return false;
+            }
+
+        }
+
+        private bool OpenConnectionToSAGEdb()
+        {
+            try
+            {
+                SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+
+                SAGEConnection.Open();
+                WriteToFile("SAGEConnection opened on: " + DateTime.Now);
+                return true;
+            }
+            catch (SqlException e)
+            {
+                WriteToFile("SAGE: Connection Error Occured: " + e + " " + DateTime.Now);
+                return false;
+            }
+
+        }
+
+
+        public SageZBService()
+        {
+            InitializeComponent();
+            SageZBServiceLog = new EventLog();
+
+            if (!EventLog.SourceExists("SageZBSource"))
+            {
+                EventLog.CreateEventSource("SageZBSource", "SageZBNewLog");
+            }
+            SageZBServiceLog.Source = "SageZBSource";
+            SageZBServiceLog.Log = "SageZBNewLog";
+
+        }
+
+        protected override void OnStart(string[] args)
+        {
+            WriteToFile("Service Started on: " + DateTime.Now);
+
+            // Set up a timer that triggers every 7 seconds.
+            timer.Elapsed += new ElapsedEventHandler(OnElapsedTime);
+            timer.Enabled = true;
+            timer.Interval = 7000;
+            timer.Start();
+        }
+
+        protected override void OnStop()
+        {
+            //  CloseConnectionToZBdb();
+            //  CloseConnectionToSAGEdb();
+            //  CloseConnectionToSAGEdb();
+            WriteToFile("Service Stopped on: " + DateTime.Now);
+            timer.Stop();
+        }
+
+        // Function for logs
+        public void WriteToFile(string Message)
+        {
+            string path = AppDomain.CurrentDomain.BaseDirectory + "\\Logs";
+            if (!Directory.Exists(path))
+            {
+                Directory.CreateDirectory(path);
+            }
+            string filepath = AppDomain.CurrentDomain.BaseDirectory + "\\Logs\\ServiceLog_" + DateTime.Now.Date.ToShortDateString().Replace('/', '_') + ".txt";
+            if (!File.Exists(filepath))
+            {
+                // Create a file to write to.  
+                using (StreamWriter sw = File.CreateText(filepath))
+                {
+                    sw.WriteLine(Message);
+                }
+            }
+            else
+            {
+                using (StreamWriter sw = File.AppendText(filepath))
+                {
+                    sw.WriteLine(Message);
+                }
+            }
+        }
+
+
+        public string GetAccountingPeriod()
+        {
+            SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+            try
+            {
+                // string Period = "";
+                // get Accounting Period
+                DateTime dToday = DateTime.Now;
+                string QuerySAGEPeriod = "SELECT idPeriod, dPeriodDate FROM [_etblPeriod] WHERE dPeriodDate >= '" + dToday + "'";
+
+                SAGEConnection.Open();
+
+                SqlCommand CmdSAGEPeriod = new SqlCommand(QuerySAGEPeriod, SAGEConnection);
+                SqlDataReader ReadSAGEPeriod = CmdSAGEPeriod.ExecuteReader();
+
+                if (ReadSAGEPeriod.HasRows)
+                {
+                    if (ReadSAGEPeriod.Read())
+                    {
+                        return ReadSAGEPeriod["idPeriod"].ToString();
+                    }
+                }
+                else
+                {
+                    WriteToFile("ACCOUNTING PERIOD NOT FOUND");
+                    return null;
+                }
+                return null;
+            }
+            catch (SqlException ex)
+            {
+                SAGEConnection.Close();
+                WriteToFile("ERROR PERIOD: CLOSING SAGE CONNECTION... " + ex + " " + DateTime.Now);
+                return null;
+            }
+            finally
+            {
+                SAGEConnection.Close();
+            }
+        }
+
+
+        public void InsertPostAR(int Ac, Double Amnt, String Description, String Description1)
+        {
+            SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+
+            if (SAGEConnection.State == ConnectionState.Closed)
+            {
+                SAGEConnection.Open();
+                string QueryString = "INSERT INTO PostAR ([TxDate],[Id],[AccountLink],[TrCodeID]," +
+                                        "[Debit],[Credit],[iCurrencyID],[fExchangeRate],[fForeignDebit],[fForeignCredit],[Description],[TaxTypeID]," +
+                                        "[Reference],[Tax_Amount],[fForeignTax],[Project],[Outstanding],[fForeignOutstanding]," +
+                                        "[InvNumKey],[RepID]," +
+                                        "[LinkAccCode],[TillID],[DTStamp],[UserName],[cReference2],[fJCRepCost]) VALUES" +
+                                        "(@dtNow,@Id,@AcLink,@TrCodeID,@Debit,@Credit,@iCurrencyID,@fExchangeRate,@fForeignDebit," +
+                                        "@fForeignCredit,@D,@TaxType,@Ref,@Tax_Amount,@fForeignTax,@Project,@Outstanding," +
+                                        "@fForeignOutstanding," +
+                                        "@InvNumKey,@RepID,@LinkAccCode,@TillID,@DTStamp,@UID,@cReference2,@fJCRepCost)";
+                SqlCommand CmdInsertSAGEPostAR = new SqlCommand();
+
+                CmdInsertSAGEPostAR.Connection = SAGEConnection;
+
+
+                CmdInsertSAGEPostAR.CommandText = QueryString;
+
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("dtNow", DateTime.Now.Date);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Id", "ARTx");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("AcLink", Ac);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TrCodeID", "1070");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Debit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Credit", Amnt);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("iCurrencyID", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fExchangeRate", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignDebit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignCredit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("D", Description);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TaxType", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Ref", "INVZB00001");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Tax_Amount", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignTax", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Project", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Outstanding", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignOutstanding", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("InvNumKey", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("RepID", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("LinkAccCode", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TillID", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("DTStamp", DateTime.Now);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("UID", Description1);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("cReference2", "ARBR006");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fJCRepCost", "0");
+
+                CmdInsertSAGEPostAR.ExecuteNonQuery();
+                WriteToFile("UPDATED AR: ");
+
+                SAGEConnection.Close();
+            }
+        }
+
+        public void InsertCreditPostGL(int Ac, string Period, Double Amnt, Double cAudit, String Description, String Description1)
+        {
+            SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+
+            if (SAGEConnection.State == ConnectionState.Closed)
+            {
+                SAGEConnection.Open();
+                string QueryInsertSAGEPostAR = "INSERT INTO PostGL ([TxDate],[Id],[AccountLink],[TrCodeID]," +
+                       "[Debit],[Credit],[iCurrencyID],[fExchangeRate],[fForeignDebit],[fForeignCredit],[Description],[TaxTypeID]," +
+                       "[Reference],[cAuditNumber],[Tax_Amount],[fForeignTax],[Project],[Period],[DTStamp],[UserName],[cReference2],[fJCRepCost]) VALUES" +
+                       "(@dtNow,@Id,@AcLink,@TrCodeID,@Debit,@Credit,@iCurrencyID,@fExchangeRate,@fForeignDebit," +
+                       "@fForeignCredit,@D,@TaxType,@Ref,@cAudit,@Tax_Amount,@fForeignTax,@Project,@Period,@DTStamp,@UID,@cReference2,@fJCRepCost);";
+                SqlCommand CmdInsertSAGEPostAR = new SqlCommand();
+
+                CmdInsertSAGEPostAR.Connection = SAGEConnection;
+
+
+                CmdInsertSAGEPostAR.CommandText = QueryInsertSAGEPostAR;
+
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("dtNow", DateTime.Now.Date);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Id", "ARTx");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("AcLink", Ac);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TrCodeID", "1070");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Debit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Credit", Amnt);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("iCurrencyID", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fExchangeRate", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignDebit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignCredit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("D", Description);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TaxType", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Ref", "INVZB00001");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("cAudit", cAudit);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Tax_Amount", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignTax", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Project", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Period", Period);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("DTStamp", DateTime.Now);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("UID", Description1);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("cReference2", "ARBR006");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fJCRepCost", "0");
+
+                CmdInsertSAGEPostAR.ExecuteNonQuery();
+                WriteToFile("UPDATED GL");
+                SAGEConnection.Close();
+            }
+        }
+
+
+        public void InsertDebitPostGL(int Ac, string Period, Double Amnt, Double cAudit, String Description, String Description1)
+        {
+            SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+
+            if (SAGEConnection.State == ConnectionState.Closed)
+            {
+                SAGEConnection.Open();
+                string QueryInsertSAGEPostAR = "INSERT INTO PostGL ([TxDate],[Id],[AccountLink],[TrCodeID]," +
+                       "[Debit],[Credit],[iCurrencyID],[fExchangeRate],[fForeignDebit],[fForeignCredit],[Description],[TaxTypeID]," +
+                       "[Reference],[cAuditNumber],[Tax_Amount],[fForeignTax],[Project],[Period],[DTStamp],[UserName],[cReference2],[fJCRepCost]) VALUES" +
+                       "(@dtNow,@Id,@AcLink,@TrCodeID,@Debit,@Credit,@iCurrencyID,@fExchangeRate,@fForeignDebit," +
+                       "@fForeignCredit,@D,@TaxType,@Ref,@cAudit,@Tax_Amount,@fForeignTax,@Project,@Period,@DTStamp,@UID,@cReference2,@fJCRepCost);";
+                SqlCommand CmdInsertSAGEPostAR = new SqlCommand();
+
+                CmdInsertSAGEPostAR.Connection = SAGEConnection;
+
+
+                CmdInsertSAGEPostAR.CommandText = QueryInsertSAGEPostAR;
+
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("dtNow", DateTime.Now.Date);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Id", "ARTx");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("AcLink", Ac);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TrCodeID", "1070");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Debit", Amnt);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Credit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("iCurrencyID", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fExchangeRate", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignDebit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignCredit", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("D", Description);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("TaxType", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Ref", "INVZB00001");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("cAudit", cAudit);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Tax_Amount", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fForeignTax", "0");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Project", "1");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("Period", Period);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("DTStamp", DateTime.Now);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("UID", Description1);
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("cReference2", "ARBR006");
+                CmdInsertSAGEPostAR.Parameters.AddWithValue("fJCRepCost", "0");
+
+                CmdInsertSAGEPostAR.ExecuteNonQuery();
+                WriteToFile("UPDATED DEBIT GL");
+                // SAGEConnection.Close();
+            }
+        }
+
+
+        public void OnElapsedTime(object sender, System.Timers.ElapsedEventArgs e)
+        {
+            try
+            {
+                // TODO: Insert monitoring activities here.
+                MySqlConnection ZBConnection = new MySqlConnection(ZBconnString);
+                MySqlConnection ECConnection = new MySqlConnection(EcoCashConnString);
+                SqlConnection SAGEConnection = new SqlConnection(SAGEconnString);
+                SqlConnection SAGEConnectionStringPOST = new SqlConnection(SAGEconnStringPOST);
+
+                try
+                {
+                    // Monitoring ZB connection opening and SAGE connnnection opening
+                    WriteToFile("Monitoring the ZB System ");
+
+                    string QueryZB = "SELECT * FROM dbeclipse.tblzpayments WHERE picked = '0' AND processed = '0'";
+
+                    if (ZBConnection.State == ConnectionState.Closed)
+                    {
+                        ZBConnection.Open();
+
+                        MySqlCommand CmdZB = new MySqlCommand(QueryZB, ZBConnection);
+                        MySqlDataReader ReadZB = CmdZB.ExecuteReader();
+                        WriteToFile("CHECKING: CHECKING FOR NEW ZB PAYMENTS STARTED ON..... " + DateTime.Now);
+
+                        if (ReadZB.HasRows)
+                        {
+                            while (ReadZB.Read())
+                            {
+                                try
+                                {
+                                    if (SAGEConnection.State == ConnectionState.Closed)
+                                    {
+                                        SAGEConnection.Open();
+
+                                        WriteToFile("SELECT: Selected..... UID: " + ReadZB["uid"] + " AMOUNT: " + ReadZB["amnt"] + " PICKED: " + ReadZB["picked"]);
+
+                                        string QuerySAGE = "SELECT DCLink,Account,Name,DCBalance FROM Client WHERE Account = '" + ReadZB["uid"] + "'";
+
+                                        SqlCommand CmdSAGE = new SqlCommand(QuerySAGE, SAGEConnection);
+                                        SqlDataReader ReadSAGE = CmdSAGE.ExecuteReader();
+                                        while (ReadSAGE.Read())
+                                        {
+                                            SAGEConnectionStringPOST.Open();
+
+                                            WriteToFile("FOUND ACCOUNT LINK: " + ReadSAGE[0] + " StudentID: " + ReadSAGE[1] +
+                                                " StudentName: " + ReadSAGE[2] + " BALANCE: " + ReadSAGE[3] + " DATE: " + DateTime.Now);
+
+                                            string Period = GetAccountingPeriod();
+
+                                            WriteToFile("PERIOD: " + Period);
+                                            // subtract paid amount from current balance
+                                            double NewBalance = Convert.ToDouble(ReadSAGE[3]) - Convert.ToDouble(ReadZB["amnt"]);
+
+                                            int Ac = Convert.ToInt32(ReadSAGE[0]);
+                                            Double Amnt = Convert.ToDouble(ReadZB["amnt"]);
+                                            string cA = Convert.ToString(ReadZB["cAudit"]);
+
+                                            // cAuditNumber Calculations
+                                            Double cAudit;
+                                            if (cA != "")
+                                            {
+                                                cAudit = Convert.ToDouble(ReadZB["cAudit"]) + 0.0001;
+                                            }
+                                            else
+                                            {
+                                                Double tempcAudit = 1.0001;
+                                                cAudit = tempcAudit;
+                                            }
+
+                                            WriteToFile("cAUDIT: " + cAudit + " AC: " + Ac + " AMNT: " + cAudit);
+                                            String Description = "ZB BANK PAYMENT";
+                                            String Description1 = "ZB";
+                                            InsertPostAR(Ac, Amnt, Description, Description1);
+                                            InsertCreditPostGL(Ac, Period, Amnt, cAudit, Description, Description1);
+                                            InsertDebitPostGL(Ac, Period, Amnt, cAudit, Description, Description1);
+
+                                            WriteToFile("UPDATED: COMPLETED MODULES");
+
+                                            // Update Current Balance with New Balance
+                                            string UpdateClient = "UPDATE Client SET [DCBalance] = @UpdateBalance WHERE DCLink = @uid";
+                                            SqlCommand CmdUpdateSAGE = new SqlCommand(UpdateClient, SAGEConnection);
+                                            CmdUpdateSAGE.Parameters.AddWithValue("UpdateBalance", NewBalance);
+                                            CmdUpdateSAGE.Parameters.AddWithValue("uid", ReadSAGE[0]);
+                                            CmdUpdateSAGE.ExecuteNonQuery();
+
+                                            WriteToFile("BALANCE UPDATED FOR ACCOUNT: " + ReadSAGE[0] + " StudentID: " + ReadSAGE[1] +
+                                            " StudentName: " + ReadSAGE[2] + " NEW BALANCE: " + NewBalance + " DATE: " + DateTime.Now);
+
+                                            string SID = Convert.ToString(ReadSAGE[1]);
+                                            // updating remote server so as not to pick a row that has already been picked
+                                            string QueryUpdateZB = "UPDATE  dbeclipse.tblzpayments SET picked = '1',processed = '1',cAudit=@caudit WHERE uid = @uid";
+                                            ZBConnection.Close();
+
+                                            ZBConnection.Open();
+                                            MySqlCommand CmdUpdateZB = new MySqlCommand(QueryUpdateZB, ZBConnection);
+                                            CmdUpdateZB.Parameters.AddWithValue("@uid", SID);
+                                            CmdUpdateZB.Parameters.AddWithValue("@caudit", cAudit);
+                                            CmdUpdateZB.ExecuteNonQuery();
+                                            WriteToFile("UPDATE: Remote (ZB) Server Updated On..... " + DateTime.Now + " UPDATED ACCOUNT: " + SID);
+
+
+                                            ReadSAGE.Close();
+
+                                            ZBConnection.Close();
+                                            WriteToFile("CLOSING ZB CONNECTION... " + DateTime.Now);
+                                            WriteToFile("DONE EXECUTION... " + DateTime.Now);
+                                            WriteToFile(" ");
+                                        } // ReadSage
+
+                                        // close SAGE connection
+                                        SAGEConnection.Close();
+                                        WriteToFile("CLOSING SAGE CONNECTION... " + DateTime.Now);
+                                    }
+                                }
+                                catch (SqlException ex)
+                                {
+                                    WriteToFile("CONNECTION-ERROR: Failed..... " + ex);
+                                }
+                                finally
+                                {
+                                    SAGEConnection.Close();
+                                    WriteToFile("FINALLY: CLOSING SAGE CONNECTION... " + DateTime.Now);
+                                }
+                            }   // ReadZ
+                        }
+                        else
+                        {
+                            WriteToFile("INFO: NO ZB PAYMENTS FOUND..... " + DateTime.Now);
+                        }
+                        //close ZB reader
+                        ReadZB.Close();
+                        WriteToFile("CLOSING ZB READER..... " + DateTime.Now);
+                        //close connections
+                        ZBConnection.Close();
+                        WriteToFile("CLOSING ZB CONNECTION..... " + DateTime.Now);
+                        WriteToFile(" ");
+                    }
+
+
+                    // Monitoring ECOCASH connection opening and SAGE connnnection opening
+                    WriteToFile("Monitoring the ECOCASH/PAYNOW System ");
+
+                    string QueryEC = "SELECT * FROM dbeclipse.tblecocashpayments WHERE picked = '0' AND processed = '0'";
+                    if (ECConnection.State == ConnectionState.Closed)
+                    {
+
+                        ECConnection.Open();
+                        MySqlCommand CmdEC = new MySqlCommand(QueryEC, ECConnection);
+                        MySqlDataReader ReadEC = CmdEC.ExecuteReader();
+                        WriteToFile("CHECKING: CHECKING FOR NEW ECOCASH/PAYNOW PAYMENTS STARTED ON..... " + DateTime.Now);
+
+                        if (ReadEC.HasRows)
+                        {
+                            while (ReadEC.Read())
+                            {
+                                try
+                                {
+                                    if (SAGEConnection.State == ConnectionState.Closed)
+                                    {
+                                        SAGEConnection.Open();
+
+                                        WriteToFile("SELECT: Selected..... UID: " + ReadEC["uid"] + " AMOUNT: " + ReadEC["amnt"] + " PICKED: " + ReadEC["picked"]);
+
+                                        string QuerySAGE = "SELECT DCLink,Account,Name,DCBalance FROM Client WHERE Account = '" + ReadEC["uid"] + "'";
+
+                                        SqlCommand CmdSAGE = new SqlCommand(QuerySAGE, SAGEConnection);
+                                        SqlDataReader ReadSAGE = CmdSAGE.ExecuteReader();
+                                        while (ReadSAGE.Read())
+                                        {
+                                            SAGEConnectionStringPOST.Open();
+
+                                            WriteToFile("FOUND ACCOUNT LINK: " + ReadSAGE[0] + " StudentID: " + ReadSAGE[1] +
+                                                " StudentName: " + ReadSAGE[2] + " BALANCE: " + ReadSAGE[3] + " DATE: " + DateTime.Now);
+
+                                            string Period = GetAccountingPeriod();
+
+                                            WriteToFile("PERIOD: " + Period);
+                                            // subtract paid amount from current balance
+                                            double NewBalance = Convert.ToDouble(ReadSAGE[3]) - Convert.ToDouble(ReadEC["amnt"]);
+
+                                            int Ac = Convert.ToInt32(ReadSAGE[0]);
+                                            Double Amnt = Convert.ToDouble(ReadEC["amnt"]);
+                                            string cA = Convert.ToString(ReadEC["cAudit"]);
+
+                                            // cAuditNumber Calculations
+                                            Double cAudit;
+                                            if (cA != "")
+                                            {
+                                                cAudit = Convert.ToDouble(ReadEC["cAudit"]) + 0.0001;
+                                            }
+                                            else
+                                            {
+                                                Double tempcAudit = 1.0001;
+                                                cAudit = tempcAudit;
+                                            }
+
+                                            WriteToFile("cAUDIT: " + cAudit + " AC: " + Ac + " AMNT: " + cAudit);
+                                            String Description = "PAYNOW PAYMENT";
+                                            String Description1 = "PAYNOW";
+                                            InsertPostAR(Ac, Amnt, Description, Description1);
+                                            InsertCreditPostGL(Ac, Period, Amnt, cAudit, Description, Description1);
+                                            InsertDebitPostGL(Ac, Period, Amnt, cAudit, Description, Description1);
+
+                                            WriteToFile("UPDATED: COMPLETED MODULES");
+
+                                            // Update Current Balance with New Balance
+                                            string UpdateClient = "UPDATE Client SET [DCBalance] = @UpdateBalance WHERE DCLink = @uid";
+                                            SqlCommand CmdUpdateSAGE = new SqlCommand(UpdateClient, SAGEConnection);
+                                            CmdUpdateSAGE.Parameters.AddWithValue("UpdateBalance", NewBalance);
+                                            CmdUpdateSAGE.Parameters.AddWithValue("uid", ReadSAGE[0]);
+                                            CmdUpdateSAGE.ExecuteNonQuery();
+
+                                            WriteToFile("BALANCE UPDATED FOR ACCOUNT: " + ReadSAGE[0] + " StudentID: " + ReadSAGE[1] +
+                                            " StudentName: " + ReadSAGE[2] + " NEW BALANCE: " + NewBalance + " DATE: " + DateTime.Now);
+
+                                            string SID = Convert.ToString(ReadSAGE[1]);
+                                            // updating remote server so as not to pick a row that has already been picked
+                                            string QueryUpdateEC = "UPDATE  dbeclipse.tblecocashpayments SET picked = '1',processed = '1',cAudit=@caudit WHERE uid = @uid";
+                                            ECConnection.Close();
+
+                                            ECConnection.Open();
+                                            MySqlCommand CmdUpdateEC = new MySqlCommand(QueryUpdateEC, ECConnection);
+                                            CmdUpdateEC.Parameters.AddWithValue("@uid", SID);
+                                            CmdUpdateEC.Parameters.AddWithValue("@caudit", cAudit);
+                                            CmdUpdateEC.ExecuteNonQuery();
+                                            WriteToFile("UPDATE: Remote (EC) Server Updated On..... " + DateTime.Now + " UPDATED ACCOUNT: " + SID);
+
+
+                                            ReadSAGE.Close();
+
+                                            ECConnection.Close();
+                                            WriteToFile("CLOSING ZB CONNECTION... " + DateTime.Now);
+                                            WriteToFile("DONE EXECUTION... " + DateTime.Now);
+                                            WriteToFile(" ");
+                                        } // ReadSage
+
+                                        // close SAGE connection
+                                        SAGEConnection.Close();
+                                        WriteToFile("CLOSING SAGE CONNECTION... " + DateTime.Now);
+                                    }
+                                }
+                                catch (SqlException ex)
+                                {
+                                    WriteToFile("CONNECTION-ERROR: Failed..... " + ex);
+                                }
+                                finally
+                                {
+                                    SAGEConnection.Close();
+                                    WriteToFile("FINALLY: CLOSING SAGE CONNECTION... " + DateTime.Now);
+                                }
+                            }   // ReadZ
+                        }
+                        else
+                        {
+                            WriteToFile("INFO: NO ECOCASH PAYMENTS FOUND..... " + DateTime.Now);
+                        }
+                        //close ZB reader
+                        ReadEC.Close();
+                        WriteToFile("CLOSING EC READER..... " + DateTime.Now);
+                        //close connections
+                        ZBConnection.Close();
+                        WriteToFile("CLOSING EC CONNECTION..... " + DateTime.Now);
+                        WriteToFile(" ");
+                    }
+                }
+                catch (SqlException ex)
+                {
+                    WriteToFile("CONNECTION-ERROR: Failed..... " + ex);
+                }
+                finally
+                {
+                    SAGEConnection.Close();
+                    WriteToFile("FINALLY: CLOSING SAGE CONNECTION... " + DateTime.Now);
+                }
+            }
+            catch (SqlException ex)
+            {
+                WriteToFile("CONNECTION-ERROR: Failed..... " + ex);
+            }
+            finally
+            {
+                WriteToFile("FINALLY: CLOSING ALL CONNECTION... " + DateTime.Now);
+                WriteToFile(" ");
+            }
+        }
+    }
+}
